@@ -1450,7 +1450,7 @@ public class SingleNodePlanner {
             scanNode.addConjuncts(pushDownConjuncts);
         }
         // assignConjuncts(scanNode, analyzer);
-        scanNode.init(analyzer);
+        scanNode.initScanNode(analyzer);
         // TODO chenhao add
         // materialize conjuncts in where
         analyzer.materializeSlots(scanNode.getConjuncts());

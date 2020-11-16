@@ -18,12 +18,17 @@
 package org.apache.doris.planner;
 
 import com.google.common.base.Predicates;
+import org.apache.doris.analysis.BinaryPredicate;
 import org.apache.doris.analysis.Analyzer;
 import org.apache.doris.analysis.Expr;
 import org.apache.doris.analysis.ExprSubstitutionMap;
 import org.apache.doris.analysis.SlotId;
 import org.apache.doris.analysis.TupleDescriptor;
 import org.apache.doris.analysis.TupleId;
+import org.apache.doris.analysis.SlotRef;
+import org.apache.doris.analysis.LiteralExpr;
+import org.apache.doris.analysis.BoolLiteral;
+import org.apache.doris.analysis.CastExpr;
 import org.apache.doris.common.AnalysisException;
 import org.apache.doris.common.TreeNode;
 import org.apache.doris.common.UserException;
@@ -482,6 +487,12 @@ abstract public class PlanNode extends TreeNode<PlanNode> {
         createDefaultSmap(analyzer);
     }
 
+    public void initScanNode(Analyzer analyzer) throws UserException {
+        assignReducedConjuncts(analyzer);
+        computeStats(analyzer);
+        createDefaultSmap(analyzer);
+    }
+
     /**
      * Assign remaining unassigned conjuncts.
      */
@@ -489,6 +500,68 @@ abstract public class PlanNode extends TreeNode<PlanNode> {
         List<Expr> unassigned = analyzer.getUnassignedConjuncts(this);
         conjuncts.addAll(unassigned);
         analyzer.markConjunctsAssigned(unassigned);
+    }
+
+    protected void assignReducedConjuncts(Analyzer analyzer) {
+        List<Expr> unassigned = analyzer.getUnassignedConjuncts(this);
+        analyzer.markConjunctsAssigned(unassigned);
+        unassigned = binaryPredicateConjunctsReduced(unassigned);
+        conjuncts.addAll(unassigned);
+    }
+
+    protected List<Expr> binaryPredicateConjunctsReduced(List<Expr> unassigned) {
+        List<Integer> deleteList = new ArrayList<>();
+        for (int i = 0; i < unassigned.size(); i++) {
+            Expr first = unassigned.get(i);
+            if (!(first instanceof BinaryPredicate)) {
+                continue;
+            }
+            BinaryPredicate fb = (BinaryPredicate) first;
+            if (!(fb.getChild(0) instanceof SlotRef) ||
+                    fb.getOp() != BinaryPredicate.Operator.EQ) {
+                continue;
+            }
+            SlotRef firstLSlot = (SlotRef) fb.getChild(0);
+            for (int j = i+1; j < unassigned.size(); j++) {
+                Expr second = unassigned.get(j);
+
+                if (!(second instanceof BinaryPredicate)) {
+                    continue;
+                }
+                BinaryPredicate sb = (BinaryPredicate) second;
+                if (!(sb.getChild(0) instanceof SlotRef) ||
+                        fb.getOp() != BinaryPredicate.Operator.EQ) {
+                    continue;
+                }
+
+                SlotRef secondLSlot = (SlotRef) sb.getChild(0);
+                if (!firstLSlot.getColumn().equals(secondLSlot.getColumn())) {
+                    continue;
+                }
+                if ((first.getChild(1) instanceof LiteralExpr) && (second.getChild(1) instanceof LiteralExpr)) {
+                    LiteralExpr firstRSlot = (LiteralExpr) first.getChild(1);
+                    LiteralExpr secondRSlot = (LiteralExpr) second.getChild(1);
+                    //redundant
+                    if (firstRSlot.getRealValue().equals(secondRSlot.getRealValue())) {
+                        deleteList.add(j);
+                    } else {//conflict
+                        List<Expr> list = new ArrayList<Expr>();
+                        list.add(new BoolLiteral(false));
+                        return list;
+                    }
+                }
+            }
+        }
+        for (int i = deleteList.size() - 1; i >= 0; i--) {
+            int index = deleteList.get(i);
+            unassigned.remove(index);
+        }
+        if (unassigned.size() == 0) {
+            List<Expr> list = new ArrayList<Expr>();
+            list.add(new BoolLiteral(false));
+            return list;
+        }
+        return unassigned;
     }
 
     /**
