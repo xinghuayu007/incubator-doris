@@ -1270,23 +1270,10 @@ public class Coordinator {
 
         HashMap<TNetworkAddress, Long> assignedBytesPerHost = Maps.newHashMap();
         for (TScanRangeLocations scanRangeLocations : locations) {
-            // assign this scan range to the host w/ the fewest assigned bytes
-            Long minAssignedBytes = Long.MAX_VALUE;
-            TScanRangeLocation minLocation = null;
-            for (final TScanRangeLocation location : scanRangeLocations.getLocations()) {
-                Long assignedBytes = findOrInsert(assignedBytesPerHost, location.server, 0L);
-                if (assignedBytes < minAssignedBytes) {
-                    minAssignedBytes = assignedBytes;
-                    minLocation = location;
-                }
-            }
-            Long scanRangeLength = getScanRangeLength(scanRangeLocations.scan_range);
-            assignedBytesPerHost.put(minLocation.server,
-                    assignedBytesPerHost.get(minLocation.server) + scanRangeLength);
-
             Reference<Long> backendIdRef = new Reference<Long>();
-            TNetworkAddress execHostPort = SimpleScheduler.getHost(minLocation.backend_id,
-                    scanRangeLocations.getLocations(), this.idToBackend, backendIdRef);
+            TScanRangeLocation minLocation = selectHost(scanRangeLocations, this.idToBackend, assignedBytesPerHost, backendIdRef);
+            Backend minBackend = this.idToBackend.get(minLocation.backend_id);
+            TNetworkAddress execHostPort = new TNetworkAddress(minBackend.getHost(), minBackend.getBePort());
             this.addressToBackendID.put(execHostPort, backendIdRef.getRef());
 
             Map<Integer, List<TScanRangeParams>> scanRanges = findOrInsert(assignment, execHostPort,
@@ -1300,6 +1287,37 @@ public class Coordinator {
             scanRangeParams.setVolumeId(minLocation.volume_id);
             scanRangeParamsList.add(scanRangeParams);
         }
+    }
+
+    public TScanRangeLocation selectHost(TScanRangeLocations scanRangeLocations,
+                                      ImmutableMap<Long, Backend> backends,
+                                      HashMap<TNetworkAddress, Long> assignedBytesPerHost,
+                                      Reference<Long> backendIdRef) throws UserException{
+        Long minScore = Long.MAX_VALUE;
+        Long step = 1L;
+        long seletedBackendId = -1;
+        TScanRangeLocation minLocation = null;
+        for (final TScanRangeLocation location : scanRangeLocations.getLocations()) {
+            Backend backend = backends.get(location.backend_id);
+            if (!SimpleScheduler.isAvailable(backend)) {
+                continue;
+            }
+            Long assignedBytes = findOrInsert(assignedBytesPerHost, location.server, 0L);
+            Long score = 7*assignedBytes + 3*backend.getTabletMaxCompactionScore();
+            LOG.warn("wangxixu-bytes:{}, compaction:{}, score:{}", assignedBytes, backend.getTabletMaxCompactionScore(), score);
+            if (score < minScore) {
+                minScore = score;
+                minLocation = location;
+                seletedBackendId = backend.getId();
+            }
+        }
+        if (seletedBackendId == -1) {
+            throw new UserException("there is no scanNode Backend. ");
+        }
+        assignedBytesPerHost.put(minLocation.server,
+                assignedBytesPerHost.get(minLocation.server) + step);
+        backendIdRef.setRef(seletedBackendId);
+        return minLocation;
     }
 
     public void updateFragmentExecStatus(TReportExecStatusParams params) {
