@@ -21,6 +21,8 @@ import org.apache.doris.analysis.Analyzer;
 import org.apache.doris.analysis.DescriptorTable;
 import org.apache.doris.catalog.Catalog;
 import org.apache.doris.catalog.FsBroker;
+import org.apache.doris.clone.BackendLoadStatistic;
+import org.apache.doris.clone.ClusterLoadStatistic;
 import org.apache.doris.common.Config;
 import org.apache.doris.common.MarkedCountDownLatch;
 import org.apache.doris.common.Pair;
@@ -80,6 +82,7 @@ import org.apache.doris.thrift.TScanRangeParams;
 import org.apache.doris.thrift.TStatusCode;
 import org.apache.doris.thrift.TTabletCommitInfo;
 import org.apache.doris.thrift.TUniqueId;
+import org.apache.doris.thrift.TStorageMedium;
 
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
@@ -1293,18 +1296,31 @@ public class Coordinator {
                                       ImmutableMap<Long, Backend> backends,
                                       HashMap<TNetworkAddress, Long> assignedBytesPerHost,
                                       Reference<Long> backendIdRef) throws UserException{
-        Long minScore = Long.MAX_VALUE;
+        double minScore = Double.MAX_VALUE;
         Long step = 1L;
         long seletedBackendId = -1;
         TScanRangeLocation minLocation = null;
+        Map<String, ClusterLoadStatistic> statMap = Catalog.getCurrentCatalog().getTabletScheduler().getStatisticMap();
+        ClusterLoadStatistic stat = statMap.get(this.clusterName);
         for (final TScanRangeLocation location : scanRangeLocations.getLocations()) {
             Backend backend = backends.get(location.backend_id);
             if (!SimpleScheduler.isAvailable(backend)) {
                 continue;
             }
+            double loadScore = 0.0;
+            if (stat != null) {
+                BackendLoadStatistic st = stat.getBackendLoadStatistic(backend.getId());
+                if (st != null) {
+                    if (st.getLoadScore(TStorageMedium.HDD) != Double.NaN) {
+                        loadScore += st.getLoadScore(TStorageMedium.HDD);
+                    }
+                    if (!String.valueOf(st.getLoadScore(TStorageMedium.SSD)).equals("NaN")) {
+                        loadScore += st.getLoadScore(TStorageMedium.SSD);
+                    }
+                }
+            }
             Long assignedBytes = findOrInsert(assignedBytesPerHost, location.server, 0L);
-            Long score = 7*assignedBytes + 3*backend.getTabletMaxCompactionScore();
-            LOG.warn("wangxixu-bytes:{}, compaction:{}, score:{}", assignedBytes, backend.getTabletMaxCompactionScore(), score);
+            double score = 0.5*loadScore + 0.3*assignedBytes + 0.2*backend.getTabletMaxCompactionScore();
             if (score < minScore) {
                 minScore = score;
                 minLocation = location;
