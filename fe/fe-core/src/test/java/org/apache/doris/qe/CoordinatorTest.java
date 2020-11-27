@@ -459,7 +459,7 @@ public class CoordinatorTest extends Coordinator {
         List<TScanRangeLocations> locations = new ArrayList<>();
         locations.add(tScanRangeLocations);
         //test condition :
-        // be0 not alive, load score and compaction score are the same
+        // be0 not alive, load score and compaction score are the same, chose lowest assignment score
         Deencapsulation.invoke(coordinator, "computeScanRangeAssignmentByScheduler",
                 olapScanNode, locations, assignment);
         for (Map.Entry entry:assignment.entrySet()) {
@@ -477,6 +477,27 @@ public class CoordinatorTest extends Coordinator {
         }
         Assert.assertTrue(hosts.get(0).equals("0.0.0.2"));
         Assert.assertTrue(hosts.get(1).equals("0.0.0.1"));
+
+        //test condition: assignment score and load score are the same, chose the lowest compaction score
+        backend0.setAlive(true);
+        backend0.setTabletMaxCompactionScore(300);
+        backend1.setTabletMaxCompactionScore(200);
+        backend2.setTabletMaxCompactionScore(100);
+        ImmutableMap<Long, Backend> idToBackend2 =
+                new ImmutableMap.Builder<Long, Backend>().
+                        put(0l, backend0).
+                        put(1l, backend1).
+                        put(2l, backend2).build();
+        Deencapsulation.setField(coordinator, "idToBackend", idToBackend2);
+        List<TScanRangeLocations> locations2 = new ArrayList<>();
+        FragmentScanRangeAssignment assignment2 = new FragmentScanRangeAssignment();
+        locations2.add(tScanRangeLocations);
+        Deencapsulation.invoke(coordinator, "computeScanRangeAssignmentByScheduler",
+                olapScanNode, locations2, assignment2);
+        for (Map.Entry entry:assignment2.entrySet()) {
+            TNetworkAddress host = (TNetworkAddress) entry.getKey();
+            Assert.assertTrue(host.hostname.equals("0.0.0.2"));
+        }
     }
 }
 
