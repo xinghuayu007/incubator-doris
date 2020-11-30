@@ -451,9 +451,9 @@ public class CoordinatorTest extends Coordinator {
 
         ImmutableMap<Long, Backend> idToBackend =
                 new ImmutableMap.Builder<Long, Backend>().
-                    put(0l, backend0).
-                    put(1l, backend1).
-                    put(2l, backend2).build();
+                put(0l, backend0).
+                put(1l, backend1).
+                put(2l, backend2).build();
         Deencapsulation.setField(coordinator, "idToBackend", idToBackend);
         FragmentScanRangeAssignment assignment = new FragmentScanRangeAssignment();
         List<TScanRangeLocations> locations = new ArrayList<>();
