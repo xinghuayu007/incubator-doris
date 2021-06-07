@@ -31,6 +31,8 @@ import org.apache.doris.analysis.TableRef;
 import org.apache.doris.catalog.Column;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.Partition;
+import org.apache.doris.catalog.PartitionItem;
+import org.apache.doris.catalog.PartitionKey;
 import org.apache.doris.catalog.PartitionType;
 import org.apache.doris.catalog.RangePartitionInfo;
 import org.apache.doris.common.Config;
@@ -44,15 +46,15 @@ import org.apache.doris.proto.InternalService;
 import org.apache.doris.qe.ConnectContext;
 import org.apache.doris.qe.RowBatch;
 import org.apache.doris.thrift.TUniqueId;
-
+import com.google.common.collect.BoundType;
 import com.google.common.collect.Lists;
-
+import com.google.common.collect.Range;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Analyze which caching mode a SQL is suitable for
@@ -255,6 +257,7 @@ public class CacheAnalyzer {
         }
         //Check if whereClause have one CompoundPredicate of partition column
         List<CompoundPredicate> compoundPredicates = Lists.newArrayList();
+        rewriteSemiRangeQuery(this.selectStmt, partColumn);
         getPartitionKeyFromSelectStmt(this.selectStmt, partColumn, compoundPredicates);
         if (compoundPredicates.size() != 1) {
             LOG.debug("empty or more than one predicates contain partition column, queryid {}", DebugUtil.printId(queryId));
@@ -266,6 +269,54 @@ public class CacheAnalyzer {
                 this.partitionPredicate);
         MetricRepo.COUNTER_CACHE_MODE_PARTITION.increase(1L);
         return CacheMode.Partition;
+    }
+
+    private void rewriteSemiRangeQuery(SelectStmt stmt, Column partColumn) {
+        Expr where = stmt.getWhereClause();
+        if (where instanceof BinaryPredicate) {
+            BinaryPredicate bp = (BinaryPredicate) where;
+            if (bp.getOp() == BinaryPredicate.Operator.GE || bp.getOp() == BinaryPredicate.Operator.GT) {
+                String column = getColumnName(bp);
+                if (partColumn.getName().equalsIgnoreCase(column)) {
+                    List<Map.Entry<Long, PartitionItem>> sortedRanges = partitionInfo.getSortedItemMap(false);
+                    if (sortedRanges.size() > 0) {
+                        // get largest partition
+                        Map.Entry<Long, PartitionItem> entry = sortedRanges.get(sortedRanges.size()-1);
+                        Range<PartitionKey> currentRange = entry.getValue().getItems();
+                        PartitionKey upperKey = currentRange.upperEndpoint();
+                        if (currentRange.upperBoundType() == BoundType.CLOSED) {
+                            BinaryPredicate newBP = new BinaryPredicate(BinaryPredicate.Operator.LE, bp.getChild(0), upperKey.getKeys().get(0));
+                            CompoundPredicate newWhere = new CompoundPredicate(CompoundPredicate.Operator.AND, bp, newBP);
+                            stmt.setWhereClause(newWhere);
+                        } else {
+                            BinaryPredicate newBP = new BinaryPredicate(BinaryPredicate.Operator.LT, bp.getChild(0), upperKey.getKeys().get(0));
+                            CompoundPredicate newWhere = new CompoundPredicate(CompoundPredicate.Operator.AND, bp, newBP);
+                            stmt.setWhereClause(newWhere);
+                        }
+                    }
+                }
+            } else if (bp.getOp() == BinaryPredicate.Operator.LE || bp.getOp() == BinaryPredicate.Operator.LT) {
+                String column = getColumnName(bp);
+                if (partColumn.getName().equalsIgnoreCase(column)) {
+                    List<Map.Entry<Long, PartitionItem>> sortedRanges = partitionInfo.getSortedItemMap(false);
+                    if (sortedRanges.size() > 0) {
+                        // get smallest partition
+                        Map.Entry<Long, PartitionItem> entry = sortedRanges.get(0);
+                        Range<PartitionKey> currentRange = entry.getValue().getItems();
+                        PartitionKey upperKey = currentRange.lowerEndpoint();
+                        if (currentRange.lowerBoundType() == BoundType.CLOSED) {
+                            BinaryPredicate newBP = new BinaryPredicate(BinaryPredicate.Operator.GE, bp.getChild(0), upperKey.getKeys().get(0));
+                            CompoundPredicate newWhere = new CompoundPredicate(CompoundPredicate.Operator.AND, bp, newBP);
+                            stmt.setWhereClause(newWhere);
+                        } else {
+                            BinaryPredicate newBP = new BinaryPredicate(BinaryPredicate.Operator.GT, bp.getChild(0), upperKey.getKeys().get(0));
+                            CompoundPredicate newWhere = new CompoundPredicate(CompoundPredicate.Operator.AND, bp, newBP);
+                            stmt.setWhereClause(newWhere);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     public InternalService.PFetchCacheResult getCacheData() {

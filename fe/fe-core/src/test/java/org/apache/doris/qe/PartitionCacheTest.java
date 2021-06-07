@@ -17,7 +17,12 @@
 
 package org.apache.doris.qe;
 
+import mockit.Expectations;
+import mockit.Mock;
+import mockit.MockUp;
+import mockit.Mocked;
 import org.apache.doris.analysis.Analyzer;
+import org.apache.doris.analysis.PartitionValue;
 import org.apache.doris.analysis.SelectStmt;
 import org.apache.doris.analysis.SqlParser;
 import org.apache.doris.analysis.SqlScanner;
@@ -34,8 +39,11 @@ import org.apache.doris.catalog.MaterializedIndex.IndexState;
 import org.apache.doris.catalog.OlapTable;
 import org.apache.doris.catalog.Partition;
 import org.apache.doris.catalog.PartitionInfo;
+import org.apache.doris.catalog.PartitionItem;
+import org.apache.doris.catalog.PartitionKey;
 import org.apache.doris.catalog.RandomDistributionInfo;
 import org.apache.doris.catalog.RangePartitionInfo;
+import org.apache.doris.catalog.RangePartitionItem;
 import org.apache.doris.catalog.ScalarType;
 import org.apache.doris.catalog.Type;
 import org.apache.doris.common.AnalysisException;
@@ -65,24 +73,17 @@ import org.apache.doris.system.Backend;
 import org.apache.doris.system.SystemInfoService;
 import org.apache.doris.thrift.TStorageType;
 import org.apache.doris.thrift.TUniqueId;
-
 import com.google.common.collect.Lists;
-
+import com.google.common.collect.Range;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
-
 import java.io.StringReader;
 import java.net.UnknownHostException;
 import java.util.List;
-
-import mockit.Expectations;
-import mockit.Mock;
-import mockit.MockUp;
-import mockit.Mocked;
 
 public class PartitionCacheTest {
     private static final Logger LOG = LogManager.getLogger(PartitionCacheTest.class);
@@ -265,7 +266,6 @@ public class PartitionCacheTest {
 
         MaterializedIndex baseIndex = new MaterializedIndex(10001, IndexState.NORMAL);
         RandomDistributionInfo distInfo = new RandomDistributionInfo(10);
-
         PartitionInfo partInfo = new RangePartitionInfo(Lists.newArrayList(column1));
 
         Partition part12 = new Partition(20200112, "p20200112", baseIndex, distInfo);
@@ -362,7 +362,49 @@ public class PartitionCacheTest {
         PartitionInfo partInfo = new RangePartitionInfo(Lists.newArrayList(column1));
         MaterializedIndex baseIndex = new MaterializedIndex(30001, IndexState.NORMAL);
         RandomDistributionInfo distInfo = new RandomDistributionInfo(10);
+        try {
+            PartitionKey rangeP1Lower =
+                    PartitionKey.createPartitionKey(Lists.newArrayList(new PartitionValue("20200112")),
+                            Lists.newArrayList(Lists.newArrayList(column1)));
+            PartitionKey rangeP1Upper =
+                    PartitionKey.createPartitionKey(Lists.newArrayList(new PartitionValue("20200113")),
+                            Lists.newArrayList(Lists.newArrayList(column1)));
+            Range<PartitionKey> rangeP1 = Range.closedOpen(rangeP1Lower, rangeP1Upper);
+            PartitionItem item1 = new RangePartitionItem(rangeP1);
+            partInfo.setItem(20200112, false, item1);
 
+            PartitionKey rangeP1Lower2 =
+                    PartitionKey.createPartitionKey(Lists.newArrayList(new PartitionValue("20200113")),
+                            Lists.newArrayList(Lists.newArrayList(column1)));;
+            PartitionKey rangeP1Upper2 =
+                    PartitionKey.createPartitionKey(Lists.newArrayList(new PartitionValue("20200114")),
+                            Lists.newArrayList(Lists.newArrayList(column1)));
+            Range<PartitionKey> rangeP2 = Range.closedOpen(rangeP1Lower2, rangeP1Upper2);
+            PartitionItem item2 = new RangePartitionItem(rangeP2);
+            partInfo.setItem(20200113, false, item2);
+
+            PartitionKey rangeP1Lower3 =
+                    PartitionKey.createPartitionKey(Lists.newArrayList(new PartitionValue("20200114")),
+                            Lists.newArrayList(Lists.newArrayList(column1)));
+            PartitionKey rangeP1Upper3 =
+                    PartitionKey.createPartitionKey(Lists.newArrayList(new PartitionValue("20200115")),
+                            Lists.newArrayList(Lists.newArrayList(column1)));
+            Range<PartitionKey> rangeP3 = Range.closedOpen(rangeP1Lower3, rangeP1Upper3);
+            PartitionItem item3 = new RangePartitionItem(rangeP3);
+            partInfo.setItem(20200114, false, item3);
+
+            PartitionKey rangeP1Lower4 =
+                    PartitionKey.createPartitionKey(Lists.newArrayList(new PartitionValue("20200115")),
+                            Lists.newArrayList(Lists.newArrayList(column1)));
+            PartitionKey rangeP1Upper4 =
+                    PartitionKey.createPartitionKey(Lists.newArrayList(new PartitionValue("20200116")),
+                            Lists.newArrayList(Lists.newArrayList(column1)));
+            Range<PartitionKey> rangeP4 = Range.closedOpen(rangeP1Lower4, rangeP1Upper4);
+            PartitionItem item4 = new RangePartitionItem(rangeP4);
+            partInfo.setItem(20200115, false, item4);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
         Partition part12 = new Partition(20200112, "p20200112", baseIndex, distInfo);
         part12.setVisibleVersion(1,1578762000000L,1);     //2020-01-12 1:00:00
         Partition part13 = new Partition(20200113, "p20200113", baseIndex, distInfo);
@@ -863,6 +905,74 @@ public class PartitionCacheTest {
             Assert.assertEquals(newRangeList.size(), 2);
             Assert.assertEquals(newRangeList.get(0).getCacheKey().realValue(), 20200112);
             Assert.assertEquals(newRangeList.get(1).getCacheKey().realValue(), 20200114);
+        } catch (Exception e) {
+            LOG.warn("ex={}", e);
+            Assert.fail(e.getMessage());
+        }
+    }
+
+    @Test
+    public void testSemiRangePartitionWithLeftBoundary() throws Exception {
+        Catalog.getCurrentSystemInfo();
+        StatementBase parseStmt = parseSql(
+                "SELECT eventdate, COUNT(DISTINCT userid) FROM appevent WHERE eventdate>='2020-01-12' GROUP BY eventdate"
+        );
+        List<ScanNode> scanNodes = Lists.newArrayList(createEventScanNode());
+        CacheAnalyzer ca = new CacheAnalyzer(context,parseStmt, scanNodes);
+        ca.checkCacheMode(1579053661000L);  //2020-1-15 10:01:01
+        Assert.assertEquals(ca.getCacheMode(), CacheMode.Partition);
+        try {
+            PartitionCache cache = (PartitionCache) ca.getCache();
+            cache.rewriteSelectStmt(null);
+            Assert.assertEquals(cache.getNokeyStmt().getWhereClause(), null);
+            PartitionRange range = cache.getPartitionRange();
+            boolean flag = range.analytics();
+            Assert.assertEquals(flag, true);
+            int size = range.getPartitionSingleList().size();
+            Assert.assertEquals(size, 4);
+            range.setCacheFlag(20200115L);    //get data from cache
+            hitRange = range.buildDiskPartitionRange(newRangeList);
+            Assert.assertEquals(hitRange,Cache.HitRange.Right);
+            Assert.assertEquals(newRangeList.size(), 2);
+            Assert.assertEquals(newRangeList.get(0).getCacheKey().realValue(), 20200112);
+            Assert.assertEquals(newRangeList.get(1).getCacheKey().realValue(), 20200114);
+            cache.rewriteSelectStmt(newRangeList);
+            String sql = ca.getRewriteStmt().getWhereClause().toSql();
+            Assert.assertEquals(sql, "`eventdate` >= '2020-01-12' AND `eventdate` < '2020-01-15'");
+        } catch (Exception e) {
+            LOG.warn("ex={}", e);
+            Assert.fail(e.getMessage());
+        }
+    }
+
+    @Test
+    public void testSemiRangePartitionWithRightBoundary() throws Exception {
+        Catalog.getCurrentSystemInfo();
+        StatementBase parseStmt = parseSql(
+                "SELECT eventdate, COUNT(DISTINCT userid) FROM appevent WHERE eventdate<='2020-01-15' GROUP BY eventdate"
+        );
+        List<ScanNode> scanNodes = Lists.newArrayList(createEventScanNode());
+        CacheAnalyzer ca = new CacheAnalyzer(context,parseStmt, scanNodes);
+        ca.checkCacheMode(1579053661000L);  //2020-1-15 10:01:01
+        Assert.assertEquals(ca.getCacheMode(), CacheMode.Partition);
+        try {
+            PartitionCache cache = (PartitionCache) ca.getCache();
+            cache.rewriteSelectStmt(null);
+            Assert.assertEquals(cache.getNokeyStmt().getWhereClause(), null);
+            PartitionRange range = cache.getPartitionRange();
+            boolean flag = range.analytics();
+            Assert.assertEquals(flag, true);
+            int size = range.getPartitionSingleList().size();
+            Assert.assertEquals(size, 4);
+            range.setCacheFlag(20200115L);    //get data from cache
+            hitRange = range.buildDiskPartitionRange(newRangeList);
+            Assert.assertEquals(hitRange,Cache.HitRange.Right);
+            Assert.assertEquals(newRangeList.size(), 2);
+            Assert.assertEquals(newRangeList.get(0).getCacheKey().realValue(), 20200112);
+            Assert.assertEquals(newRangeList.get(1).getCacheKey().realValue(), 20200114);
+            cache.rewriteSelectStmt(newRangeList);
+            String sql = ca.getRewriteStmt().getWhereClause().toSql();
+            Assert.assertEquals(sql, "`eventdate` <= '2020-01-14' AND `eventdate` >= '2020-01-12'");
         } catch (Exception e) {
             LOG.warn("ex={}", e);
             Assert.fail(e.getMessage());
