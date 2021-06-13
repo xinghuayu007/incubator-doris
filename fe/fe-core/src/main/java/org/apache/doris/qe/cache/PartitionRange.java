@@ -359,19 +359,31 @@ public class PartitionRange {
         }
         int begin = partitionSingleList.size() - 1;
         int end = 0;
+        boolean hitCacheFlag = false;
+        boolean hasMiddleCache = false;
         for (int i = 0; i < partitionSingleList.size(); i++) {
             if (!partitionSingleList.get(i).isFromCache()) {
                 if (begin > i) {
+                    hitCacheFlag = false;
                     begin = i;
                 }
                 if (end < i) {
                     end = i;
+                    if (hitCacheFlag) {
+                        hasMiddleCache = true;
+                    }
                 }
+            } else {
+                hitCacheFlag = true;
             }
         }
         if (end < begin) {
             hitRange = Cache.HitRange.Full;
             return hitRange;
+        } else if (hasMiddleCache) {
+            begin = 0;
+            end = partitionSingleList.size() - 1;
+            hitRange = Cache.HitRange.None;
         } else if (begin > 0 && end == partitionSingleList.size() - 1) {
             hitRange = Cache.HitRange.Left;
         } else if (begin == 0 && end < partitionSingleList.size() - 1) {

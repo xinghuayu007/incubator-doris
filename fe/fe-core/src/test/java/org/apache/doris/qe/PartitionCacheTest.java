@@ -17,6 +17,10 @@
 
 package org.apache.doris.qe;
 
+import mockit.Expectations;
+import mockit.Mock;
+import mockit.MockUp;
+import mockit.Mocked;
 import org.apache.doris.analysis.Analyzer;
 import org.apache.doris.analysis.SelectStmt;
 import org.apache.doris.analysis.SqlParser;
@@ -65,24 +69,16 @@ import org.apache.doris.system.Backend;
 import org.apache.doris.system.SystemInfoService;
 import org.apache.doris.thrift.TStorageType;
 import org.apache.doris.thrift.TUniqueId;
-
 import com.google.common.collect.Lists;
-
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
-
 import java.io.StringReader;
 import java.net.UnknownHostException;
 import java.util.List;
-
-import mockit.Expectations;
-import mockit.Mock;
-import mockit.MockUp;
-import mockit.Mocked;
 
 public class PartitionCacheTest {
     private static final Logger LOG = LogManager.getLogger(PartitionCacheTest.class);
@@ -863,6 +859,44 @@ public class PartitionCacheTest {
             Assert.assertEquals(newRangeList.size(), 2);
             Assert.assertEquals(newRangeList.get(0).getCacheKey().realValue(), 20200112);
             Assert.assertEquals(newRangeList.get(1).getCacheKey().realValue(), 20200114);
+        } catch (Exception e) {
+            LOG.warn("ex={}", e);
+            Assert.fail(e.getMessage());
+        }
+    }
+
+    @Test
+    public void testHitMidPartition() throws Exception {
+        Catalog.getCurrentSystemInfo();
+        StatementBase parseStmt = parseSql(
+                "SELECT eventdate, COUNT(userid) FROM appevent WHERE eventdate>=\"2020-01-12\" and eventdate<=\"2020-01-15\" GROUP BY eventdate"
+        );
+        List<ScanNode> scanNodes = Lists.newArrayList(createEventScanNode());
+        CacheAnalyzer ca = new CacheAnalyzer(context, parseStmt, scanNodes);
+        ca.checkCacheMode(1579053661000L); //2020-1-15 10:01:01
+        Assert.assertEquals(ca.getCacheMode(), CacheMode.Partition);      //assert cache model first
+
+        try {
+            PartitionCache cache = (PartitionCache) ca.getCache();
+
+            cache.rewriteSelectStmt(null);
+            Assert.assertEquals(cache.getNokeyStmt().getWhereClause(), null);
+
+            PartitionRange range = cache.getPartitionRange();
+            boolean flag = range.analytics();
+            Assert.assertEquals(flag, true);
+
+            int size = range.getPartitionSingleList().size();
+            Assert.assertEquals(size, 4);
+
+            range.setCacheFlag(20200113);
+            range.setCacheFlag(20200115);
+
+            hitRange = range.buildDiskPartitionRange(newRangeList);
+            Assert.assertEquals(hitRange,Cache.HitRange.None);
+            Assert.assertEquals(newRangeList.size(), 2);
+            Assert.assertEquals(newRangeList.get(0).getCacheKey().realValue(), 20200112);
+            Assert.assertEquals(newRangeList.get(1).getCacheKey().realValue(), 20200115);
         } catch (Exception e) {
             LOG.warn("ex={}", e);
             Assert.fail(e.getMessage());
